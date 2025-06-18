@@ -2,6 +2,13 @@
 #include "CPM.h"
 #include "OpticFlowIO.h"
 
+#include <iostream>
+#include <string>
+#include <vector>
+#include <cmath>
+#include <limits>
+#include <algorithm>
+
 #include <filesystem>
 #include <dirent.h>   // Para listar archivos del directorio
 #include <cstring>    // Para strcmp y strstr
@@ -63,12 +70,12 @@ void WriteMatches(const char *filename, FImage& inMat)
 	fclose(fid);
 }
 
-
 namespace fs = std::filesystem;
 
 std::string removeExtension(const std::string& filename) {
     size_t lastDot = filename.find_last_of(".");
     return (lastDot == std::string::npos) ? filename : filename.substr(0, lastDot);
+}
 }
 
 int main(int argc, char** argv)
@@ -113,7 +120,7 @@ int main(int argc, char** argv)
             img2.imread(imagenes[j].string().c_str());
 
             if (img1.width() != img2.width() || img1.height() != img2.height()) {
-                std::cerr << "Imágenes con diferentes dimensiones: " 
+                std::cerr << "Imágenes con diferentes dimensiones: "
                           << imagenes[i] << " y " << imagenes[j] << "\n";
                 continue;
             }
@@ -127,40 +134,56 @@ int main(int argc, char** argv)
             cpm.Matching(img1, img2, matches);
             Match2Flow(matches, u, v, w, h);
 
-            double menor = UNKNOWN_FLOW, mayor = -UNKNOWN_FLOW;
+            double menor = std::numeric_limits<double>::max();
+            double mayor = std::numeric_limits<double>::lowest();
             int conta1 = 0, conta2 = 0;
 
             for (int k = 0; k < w * h; ++k) {
                 if (u.pData[k] != UNKNOWN_FLOW) {
-                    menor = std::min(menor, u.pData[k]);
-                    mayor = std::max(mayor, u.pData[k]);
+                    double val = static_cast<double>(u.pData[k]);
+                    menor = std::min(menor, val);
+                    mayor = std::max(mayor, val);
                     conta1++;
                 }
                 if (v.pData[k] != UNKNOWN_FLOW) {
-                    menor = std::min(menor, v.pData[k]);
-                    mayor = std::max(mayor, v.pData[k]);
+                    double val = static_cast<double>(v.pData[k]);
+                    menor = std::min(menor, val);
+                    mayor = std::max(mayor, val);
                     conta2++;
                 }
             }
 
-            int tam = int(std::fabs(menor)) + int(std::fabs(mayor)) + 1;
+            if (conta1 == 0 || conta2 == 0) {
+                std::cerr << "Flujo desconocido en todas las posiciones entre "
+                          << imagenes[i] << " y " << imagenes[j] << "\n";
+                salida << removeExtension(imagenes[i].filename().string()) << ","
+                       << removeExtension(imagenes[j].filename().string()) << ",0\n";
+                continue;
+            }
+
+            int shift = static_cast<int>(std::abs(menor));
+            int tam = static_cast<int>(std::fabs(menor) + std::fabs(mayor)) + 1;
             std::vector<int> hx(tam, 0), hy(tam, 0);
 
-            for (int b = 0; b < tam; ++b) {
-                for (int m = 0; m < w * h; ++m) {
-                    if (int(u.pData[m]) + std::abs(menor) == b) hx[b]++;
-                    if (int(v.pData[m]) + std::abs(menor) == b) hy[b]++;
+            for (int m = 0; m < w * h; ++m) {
+                if (u.pData[m] != UNKNOWN_FLOW) {
+                    int bin = static_cast<int>(u.pData[m]) + shift;
+                    if (bin >= 0 && bin < tam) hx[bin]++;
+                }
+                if (v.pData[m] != UNKNOWN_FLOW) {
+                    int bin = static_cast<int>(v.pData[m]) + shift;
+                    if (bin >= 0 && bin < tam) hy[bin]++;
                 }
             }
 
-            double abajo = double(2 * conta1), f = 0.0;
+            double abajo = double(2 * conta1);
+            double f = 0.0;
             for (int b = 0; b < tam; ++b) {
                 double arriba = double(hx[b] + hy[b]);
                 double resultado = arriba / abajo;
                 f += resultado * resultado;
             }
 
-            // Escribir resultado en el CSV (sin extensión)
             std::string nombre1 = removeExtension(imagenes[i].filename().string());
             std::string nombre2 = removeExtension(imagenes[j].filename().string());
             salida << nombre1 << "," << nombre2 << "," << (std::isnan(f) ? 0.0 : f) << "\n";
