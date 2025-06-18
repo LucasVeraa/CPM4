@@ -2,6 +2,10 @@
 #include "CPM.h"
 #include "OpticFlowIO.h"
 
+#include <dirent.h>   // Para listar archivos del directorio
+#include <cstring>    // Para strcmp y strstr
+#include <fstream>    // Para escritura de resultados en CSV
+
 //para el calculo de tiempos
 #include <sys/resource.h>
 #include <time.h>
@@ -60,113 +64,104 @@ void WriteMatches(const char *filename, FImage& inMat)
 
 int main(int argc, char** argv)
 {
+    if (argc < 3) {
+        printf("USAGE: CPM image_folder output.csv\n");
+        return -1;
+    }
 
-	if (argc < 3){
-		printf("USAGE: CPM image1 image2 outMatchText <step>\n");
-		return -1;
-	}
+    string folderPath = argv[1];
+    string outputCSV = argv[2];
 
-	FImage img1, img2;
+    vector<string> imageFiles;
 
-	
+    // Leer nombres de archivos en el directorio
+    DIR* dir = opendir(folderPath.c_str());
+    if (!dir) {
+        perror("Error abriendo directorio");
+        return -1;
+    }
 
-	img1.imread(argv[1]);
-	img2.imread(argv[2]);
-	char* outMatName = argv[3];
-	int step = 3;
-	if (argc >= 5){
-		step = atoi(argv[4]);
-	}
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        string name = entry->d_name;
+        if (name.length() > 4 && (strstr(name.c_str(), ".png") || strstr(name.c_str(), ".jpg") || strstr(name.c_str(), ".bmp"))) {
+            imageFiles.push_back(folderPath + "/" + name);
+        }
+    }
+    closedir(dir);
 
-	int w = img1.width();
-	int h = img1.height();
-	if (img2.width() != w || img2.height() != h){
-		printf("CPM can only handle images with the same dimension!\n");
-		return -1;
-	}
+    // Abrir archivo de salida CSV
+    ofstream outFile(outputCSV);
+    outFile << "imagen1,imagen2,resultado\n";
 
-	CTimer totalT;
-	FImage matches;
+    // Comparar cada imagen con todas las demás
+    for (size_t i = 0; i < imageFiles.size(); ++i) {
+        for (size_t j = 0; j < imageFiles.size(); ++j) {
 
-	CPM cpm;
-	cpm.SetStep(step);
-	cpm.Matching(img1, img2, matches);
+            FImage img1, img2;
+            img1.imread(imageFiles[i].c_str());
+            img2.imread(imageFiles[j].c_str());
 
-	FImage u, v;
-	Match2Flow(matches, u, v, w, h);
+            if (img1.width() != img2.width() || img1.height() != img2.height()) {
+                printf("Saltando comparación entre %s y %s (dimensiones diferentes)\n", imageFiles[i].c_str(), imageFiles[j].c_str());
+                continue;
+            }
 
-	int conta1=0,conta2=0;
-	double menor=UNKNOWN_FLOW, mayor=-UNKNOWN_FLOW;
+            int w = img1.width();
+            int h = img1.height();
+            FImage matches;
+            CPM cpm;
+            cpm.SetStep(3);  // o ajusta si quieres
+            cpm.Matching(img1, img2, matches);
 
-	for (int i = 0; i < w*h; ++i){
-		if (u.pData[i]!=UNKNOWN_FLOW){
-			fflush(stdout);
-			menor=__min(menor, u.pData[i]);
-			mayor=__max(mayor, u.pData[i]);
-			conta1++;
-		}
-		if (v.pData[i]!=UNKNOWN_FLOW){
-			fflush(stdout);
-			menor=__min(menor, v.pData[i]);
-			mayor=__max(mayor, v.pData[i]);
-			conta2++;
-		}
-	}
+            FImage u, v;
+            Match2Flow(matches, u, v, w, h);
 
-	fflush(stdout);
-	int tam=0;
-	tam=int(fabs(menor))+int(fabs(mayor))+1;	
+            int conta1=0,conta2=0;
+            double menor=UNKNOWN_FLOW, mayor=-UNKNOWN_FLOW;
 
-	int hx[tam], hy[tam];
+            for (int k = 0; k < w*h; ++k){
+                if (u.pData[k] != UNKNOWN_FLOW){
+                    menor = __min(menor, u.pData[k]);
+                    mayor = __max(mayor, u.pData[k]);
+                    conta1++;
+                }
+                if (v.pData[k] != UNKNOWN_FLOW){
+                    menor = __min(menor, v.pData[k]);
+                    mayor = __max(mayor, v.pData[k]);
+                    conta2++;
+                }
+            }
 
-	for (int b = 0; b < tam; ++b){
-		hx[b]=0;
-		hy[b]=0;
-	}
+            int tam = int(fabs(menor)) + int(fabs(mayor)) + 1;
+            vector<int> hx(tam, 0), hy(tam, 0);
 
-	int cont=0;
-	for(int b=0;b<tam;b++){
-		for (int m = 0; m < w*h; ++m){
-			if (int(u.pData[m])+abs(menor)==b){
-				cont++;
-			}
-		}
-		hx[b]=cont;
-		cont=0;
-	}
+            for (int k = 0; k < w*h; ++k) {
+                if (u.pData[k] != UNKNOWN_FLOW)
+                    hx[int(u.pData[k]) + abs(int(menor))]++;
+                if (v.pData[k] != UNKNOWN_FLOW)
+                    hy[int(v.pData[k]) + abs(int(menor))]++;
+            }
 
-	for(int b=0;b<tam;b++){
-		for (int m = 0; m < w*h; ++m){
-			if (int(v.pData[m])+abs(menor)==b)
-			{
-				cont++;
-			}
-		}
-		hy[b]=cont;
-		cont=0;
-	}
+            double f = 0;
+            double abajo = double(2 * conta1);
+            for (int b = 0; b < tam; ++b){
+                double arriba = double(hx[b] + hy[b]);
+                double resultado = (arriba / abajo);
+                f += resultado * resultado;
+            }
 
-	int suma1=0;
-	int suma2=0;
-	for (int b = 0; b < tam; ++b){
-		suma1+=hx[b];
-		suma2+=hy[b];
-	}
+            if (f != f) f = 0.0; // comprobar NaN
 
-	double f=0;
-	double abajo = double(2*conta1);
-	for (int b = 0; b < tam; ++b){
-		double arriba =double( hx[b] + hy[b]);
-		double resultado = double((arriba/abajo));
-		f+=resultado*resultado;
-	}
+            // Guardar resultado en CSV
+            outFile << imageFiles[i].substr(folderPath.length()+1) << ","
+                    << imageFiles[j].substr(folderPath.length()+1) << ","
+                    << f << "\n";
 
-	f==f? cout << f << endl: 
-          cout << "0" << endl;
-	//printf("%lf\n",f );
+            fflush(stdout);
+        }
+    }
 
-
-
-
-	return 0;
+    outFile.close();
+    return 0;
 }
