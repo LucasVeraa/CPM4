@@ -76,7 +76,6 @@ std::string removeExtension(const std::string& filename) {
     size_t lastDot = filename.find_last_of(".");
     return (lastDot == std::string::npos) ? filename : filename.substr(0, lastDot);
 }
-}
 
 int main(int argc, char** argv)
 {
