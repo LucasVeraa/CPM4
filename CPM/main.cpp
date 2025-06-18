@@ -2,6 +2,7 @@
 #include "CPM.h"
 #include "OpticFlowIO.h"
 
+#include <filesystem>
 #include <dirent.h>   // Para listar archivos del directorio
 #include <cstring>    // Para strcmp y strstr
 #include <fstream>    // Para escritura de resultados en CSV
@@ -62,106 +63,113 @@ void WriteMatches(const char *filename, FImage& inMat)
 	fclose(fid);
 }
 
+
+namespace fs = std::filesystem;
+
+std::string removeExtension(const std::string& filename) {
+    size_t lastDot = filename.find_last_of(".");
+    return (lastDot == std::string::npos) ? filename : filename.substr(0, lastDot);
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 3) {
-        printf("USAGE: CPM image_folder output.csv\n");
-        return -1;
+        std::cerr << "USAGE: " << argv[0] << " <carpeta_imagenes> <archivo_salida.csv>\n";
+        return 1;
     }
 
-    string folderPath = argv[1];
-    string outputCSV = argv[2];
+    std::string carpeta = argv[1];
+    std::string archivoSalida = argv[2];
 
-    vector<string> imageFiles;
+    std::vector<fs::path> imagenes;
 
-    // Leer nombres de archivos en el directorio
-    DIR* dir = opendir(folderPath.c_str());
-    if (!dir) {
-        perror("Error abriendo directorio");
-        return -1;
-    }
-
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != NULL) {
-        string name = entry->d_name;
-        if (name.length() > 4 && (strstr(name.c_str(), ".png") || strstr(name.c_str(), ".jpg") || strstr(name.c_str(), ".bmp"))) {
-            imageFiles.push_back(folderPath + "/" + name);
+    for (const auto& entrada : fs::directory_iterator(carpeta)) {
+        if (entrada.is_regular_file()) {
+            std::string ext = entrada.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+            if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tif") {
+                imagenes.push_back(entrada.path());
+            }
         }
     }
-    closedir(dir);
 
-    // Abrir archivo de salida CSV
-    ofstream outFile(outputCSV);
-    outFile << "imagen1,imagen2,resultado\n";
+    if (imagenes.size() < 2) {
+        std::cerr << "Debe haber al menos 2 imágenes válidas en la carpeta.\n";
+        return 1;
+    }
 
-    // Comparar cada imagen con todas las demás
-    for (size_t i = 0; i < imageFiles.size(); ++i) {
-        for (size_t j = 0; j < imageFiles.size(); ++j) {
+    std::ofstream salida(archivoSalida);
+    if (!salida.is_open()) {
+        std::cerr << "No se pudo abrir el archivo de salida.\n";
+        return 1;
+    }
 
+    salida << "imagen1,imagen2,resultado\n"; // encabezado
+
+    for (size_t i = 0; i < imagenes.size(); ++i) {
+        for (size_t j = 0; j < imagenes.size(); ++j) {
             FImage img1, img2;
-            img1.imread(imageFiles[i].c_str());
-            img2.imread(imageFiles[j].c_str());
+            img1.imread(imagenes[i].string().c_str());
+            img2.imread(imagenes[j].string().c_str());
 
             if (img1.width() != img2.width() || img1.height() != img2.height()) {
-                printf("Saltando comparación entre %s y %s (dimensiones diferentes)\n", imageFiles[i].c_str(), imageFiles[j].c_str());
+                std::cerr << "Imágenes con diferentes dimensiones: " 
+                          << imagenes[i] << " y " << imagenes[j] << "\n";
                 continue;
             }
 
             int w = img1.width();
             int h = img1.height();
-            FImage matches;
-            CPM cpm;
-            cpm.SetStep(3);  // o ajusta si quieres
-            cpm.Matching(img1, img2, matches);
 
-            FImage u, v;
+            FImage matches, u, v;
+            CPM cpm;
+            cpm.SetStep(3);
+            cpm.Matching(img1, img2, matches);
             Match2Flow(matches, u, v, w, h);
 
-            int conta1=0,conta2=0;
-            double menor=UNKNOWN_FLOW, mayor=-UNKNOWN_FLOW;
+            double menor = UNKNOWN_FLOW, mayor = -UNKNOWN_FLOW;
+            int conta1 = 0, conta2 = 0;
 
-            for (int k = 0; k < w*h; ++k){
-                if (u.pData[k] != UNKNOWN_FLOW){
-                    menor = __min(menor, u.pData[k]);
-                    mayor = __max(mayor, u.pData[k]);
+            for (int k = 0; k < w * h; ++k) {
+                if (u.pData[k] != UNKNOWN_FLOW) {
+                    menor = std::min(menor, u.pData[k]);
+                    mayor = std::max(mayor, u.pData[k]);
                     conta1++;
                 }
-                if (v.pData[k] != UNKNOWN_FLOW){
-                    menor = __min(menor, v.pData[k]);
-                    mayor = __max(mayor, v.pData[k]);
+                if (v.pData[k] != UNKNOWN_FLOW) {
+                    menor = std::min(menor, v.pData[k]);
+                    mayor = std::max(mayor, v.pData[k]);
                     conta2++;
                 }
             }
 
-            int tam = int(fabs(menor)) + int(fabs(mayor)) + 1;
-            vector<int> hx(tam, 0), hy(tam, 0);
+            int tam = int(std::fabs(menor)) + int(std::fabs(mayor)) + 1;
+            std::vector<int> hx(tam, 0), hy(tam, 0);
 
-            for (int k = 0; k < w*h; ++k) {
-                if (u.pData[k] != UNKNOWN_FLOW)
-                    hx[int(u.pData[k]) + abs(int(menor))]++;
-                if (v.pData[k] != UNKNOWN_FLOW)
-                    hy[int(v.pData[k]) + abs(int(menor))]++;
+            for (int b = 0; b < tam; ++b) {
+                for (int m = 0; m < w * h; ++m) {
+                    if (int(u.pData[m]) + std::abs(menor) == b) hx[b]++;
+                    if (int(v.pData[m]) + std::abs(menor) == b) hy[b]++;
+                }
             }
 
-            double f = 0;
-            double abajo = double(2 * conta1);
-            for (int b = 0; b < tam; ++b){
+            double abajo = double(2 * conta1), f = 0.0;
+            for (int b = 0; b < tam; ++b) {
                 double arriba = double(hx[b] + hy[b]);
-                double resultado = (arriba / abajo);
+                double resultado = arriba / abajo;
                 f += resultado * resultado;
             }
 
-            if (f != f) f = 0.0; // comprobar NaN
+            // Escribir resultado en el CSV (sin extensión)
+            std::string nombre1 = removeExtension(imagenes[i].filename().string());
+            std::string nombre2 = removeExtension(imagenes[j].filename().string());
+            salida << nombre1 << "," << nombre2 << "," << (std::isnan(f) ? 0.0 : f) << "\n";
 
-            // Guardar resultado en CSV
-            outFile << imageFiles[i].substr(folderPath.length()+1) << ","
-                    << imageFiles[j].substr(folderPath.length()+1) << ","
-                    << f << "\n";
-
-            fflush(stdout);
+            std::cout << "Comparado: " << nombre1 << " vs " << nombre2 << " = " << f << "\n";
         }
     }
 
-    outFile.close();
+    salida.close();
+    std::cout << "Comparaciones completadas.\n";
     return 0;
 }
